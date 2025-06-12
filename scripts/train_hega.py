@@ -37,32 +37,41 @@ def main():
     parser.add_argument("--emb_epochs", type=int, default=1)
     parser.add_argument("--gen_epochs", type=int, default=1)
     parser.add_argument("--output_dir", type=str, default="hega_model")
-    parser.add_argument("--use_embedding_for_generation", action="store_true")
+    parser.add_argument(
+        "--gen_from_l_cut",
+        action="store_true",
+        help="Start generation from L+1 instead of layer 0",
+    )
     args = parser.parse_args()
 
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in range(args.gpus))
 
-    hega = HEGAModel(model_name=args.model, l_cut=args.l_cut,
-                     use_embedding_for_generation=args.use_embedding_for_generation,
-                     n_gpus=args.gpus)
+    hega = HEGAModel(
+        model_name=args.model,
+        l_cut=args.l_cut,
+        use_embedding_for_generation=args.gen_from_l_cut,
+        n_gpus=args.gpus,
+    )
 
     dataset = list(dummy_dataset())
-    loader = DataLoader(dataset, batch_size=2, shuffle=True,
-                        collate_fn=lambda b: collate(b, hega.tokenizer))
+    loader = DataLoader(
+        dataset,
+        batch_size=2,
+        shuffle=True,
+        pin_memory=True if torch.cuda.is_available() else False,
+        collate_fn=lambda b: collate(b, hega.tokenizer),
+    )
 
     hega.unfreeze_embedding_layers()
-    for i in range(args.l_cut, len(hega.model.model.layers)):
-        for p in hega.model.model.layers[i].parameters():
-            p.requires_grad = False
+    hega.freeze_generation_layers()
     train_phase(hega, loader, args.emb_epochs, lr=1e-5)
 
     hega.freeze_embedding_layers()
-    for i in range(args.l_cut, len(hega.model.model.layers)):
-        for p in hega.model.model.layers[i].parameters():
-            p.requires_grad = True
+    hega.unfreeze_generation_layers()
     train_phase(hega, loader, args.gen_epochs, lr=1e-5)
 
-    save_name = f"{args.model.replace('/', '_')}_cut{args.l_cut}_gpus{args.gpus}"
+    gen_tag = "fromL" if args.gen_from_l_cut else "from0"
+    save_name = f"{args.model.replace('/', '_')}_cut{args.l_cut}_{gen_tag}_gpus{args.gpus}"
     output_path = os.path.join(args.output_dir, save_name)
     os.makedirs(output_path, exist_ok=True)
     hega.save(output_path)

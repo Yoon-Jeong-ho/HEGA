@@ -17,6 +17,7 @@ class HEGAModel:
         n_gpus: int = 1,
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        torch.backends.cudnn.benchmark = True
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
@@ -44,6 +45,17 @@ class HEGAModel:
 
     def unfreeze_embedding_layers(self):
         for i in range(self.l_cut):
+            for p in self.model.model.layers[i].parameters():
+                p.requires_grad = True
+
+    def freeze_generation_layers(self):
+        """Freeze layers used for generation."""
+        for i in range(self.l_cut, len(self.model.model.layers)):
+            for p in self.model.model.layers[i].parameters():
+                p.requires_grad = False
+
+    def unfreeze_generation_layers(self):
+        for i in range(self.l_cut, len(self.model.model.layers)):
             for p in self.model.model.layers[i].parameters():
                 p.requires_grad = True
 
@@ -77,17 +89,34 @@ class HEGAModel:
         logits = self.model.lm_head(hidden_states)
         return logits
 
-    def generate(self, prompt: str, max_new_tokens: int = 50) -> str:
+    def generate(self, prompt: str, max_new_tokens: int = 50, use_embedding: bool | None = None) -> str:
+        """Generate a response.
+
+        Parameters
+        ----------
+        prompt : str
+            Input text.
+        max_new_tokens : int, optional
+            Number of tokens to generate, by default 50.
+        use_embedding : bool | None, optional
+            If ``True`` start generation from ``l_cut+1`` using the embedding
+            layers' output. If ``False`` generate from the model start. When
+            ``None`` the value from ``self.use_embedding_for_generation`` is
+            used.
+        """
+
         retrieved_texts = self.retrieve(prompt)
         context = prompt
         if retrieved_texts:
             context += "\n" + "\n".join(retrieved_texts)
         inputs = self.tokenizer(context, return_tensors="pt").to(self.device)
-        if self.use_embedding_for_generation:
+        start_from_embedding = self.use_embedding_for_generation if use_embedding is None else use_embedding
+        if start_from_embedding:
             hidden_states = self.model.model.embed_tokens(inputs.input_ids)
             hidden_states = self._forward_until(hidden_states, self.l_cut)
-            logits = self._forward_from(hidden_states, self.l_cut)
-            generated = self.model.generate(inputs_embeds=logits, max_new_tokens=max_new_tokens,
+            generated = self.model.generate(inputs_embeds=hidden_states,
+                                            attention_mask=inputs.attention_mask,
+                                            max_new_tokens=max_new_tokens,
                                             pad_token_id=self.tokenizer.eos_token_id)
         else:
             generated = self.model.generate(**inputs, max_new_tokens=max_new_tokens,
