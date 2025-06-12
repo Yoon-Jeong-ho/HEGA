@@ -7,13 +7,22 @@ from typing import List
 class HEGAModel:
     """Hybrid Embedding-to-Generation Architecture."""
 
-    def __init__(self, model_name: str = "mistralai/Mistral-7B-v0.1", l_cut: int = 16,
-                 use_embedding_for_generation: bool = True, k: int = 4, device: str | None = None):
+    def __init__(
+        self,
+        model_name: str = "mistralai/Mistral-7B-v0.1",
+        l_cut: int = 16,
+        use_embedding_for_generation: bool = True,
+        k: int = 4,
+        device: str | None = None,
+        n_gpus: int = 1,
+    ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
         ).to(self.device)
+        if n_gpus > 1 and torch.cuda.device_count() >= n_gpus:
+            self.model = torch.nn.DataParallel(self.model, device_ids=list(range(n_gpus)))
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.l_cut = l_cut
         self.k = k
@@ -26,6 +35,17 @@ class HEGAModel:
             layer = self.model.model.layers[i]
             hidden_states = layer(hidden_states)[0]
         return hidden_states
+
+    def freeze_embedding_layers(self):
+        """Freeze layers used for embedding."""
+        for i in range(self.l_cut):
+            for p in self.model.model.layers[i].parameters():
+                p.requires_grad = False
+
+    def unfreeze_embedding_layers(self):
+        for i in range(self.l_cut):
+            for p in self.model.model.layers[i].parameters():
+                p.requires_grad = True
 
     def encode(self, texts: List[str]) -> torch.Tensor:
         inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(self.device)
@@ -73,3 +93,11 @@ class HEGAModel:
             generated = self.model.generate(**inputs, max_new_tokens=max_new_tokens,
                                             pad_token_id=self.tokenizer.eos_token_id)
         return self.tokenizer.decode(generated[0], skip_special_tokens=True)
+
+    def save(self, output_dir: str):
+        """Save model and tokenizer."""
+        if isinstance(self.model, torch.nn.DataParallel):
+            self.model.module.save_pretrained(output_dir)
+        else:
+            self.model.save_pretrained(output_dir)
+        self.tokenizer.save_pretrained(output_dir)

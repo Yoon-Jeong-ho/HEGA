@@ -1,3 +1,5 @@
 torch
 transformers
 faiss-cpu
+accelerate
+datasets

@@ -17,3 +17,17 @@ python scripts/hega_example.py --prompt "Tell me about transformers" --l_cut 16 
 ```
 
 Add `--use_embedding_for_generation` to continue generation from the embedding layers.
+
+### Training with multiple GPUs
+
+`scripts/train_hega.py` demonstrates a two-phase training procedure. The number
+of GPUs (1-8) can be selected with `--gpus`.
+
+```bash
+python scripts/train_hega.py --gpus 2 --l_cut 16 --emb_epochs 1 --gen_epochs 1 \
+    --output_dir models
+```
+
+The script first trains layers `0~l_cut` for embedding, then freezes them and
+fine-tunes the remaining layers for generation. The resulting model is saved in
+`models/` with a name that encodes the chosen settings.
